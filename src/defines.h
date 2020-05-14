@@ -13,3 +13,6 @@
 
 #define CONNECTION_STATUS_LED_GPIO 0
 
+#define RELAY_BOARD_ADDRESS 0x26
+#define SDA_GPIO 13
+#define SCL_GPIO 14

@@ -13,6 +13,8 @@ PubSubClient PSclient(wclient);
 os_timer_t heartbeatTimer;
 os_timer_t relayTimer;
 
+//  I2C
+PCF857x i2c_io(RELAY_BOARD_ADDRESS, &Wire);
 
 //  Other global variables
 config appConfig;
@@ -29,8 +31,8 @@ WiFiUDP Udp;
 bool needsHeartbeat = false;
 bool toggleRelay = false;
 
-digitalOutput digitalOutputs[1] = {
-  { 2, "Bazi nagy relay"}
+digitalOutput digitalOutputs[0] = {
+  // { 2, "Bazi nagy relay"}
 };
 
 // Daylight savings time rules for Greece
@@ -64,7 +66,7 @@ void relayTimerCallback(void *pArg) {
 }
 
 bool loadSettings(config& data) {
-  fs::File configFile = SPIFFS.open("/config.json", "r");
+  File configFile = LittleFS.open("/config.json", "r");
   if (!configFile) {
     Serial.println("Failed to open config file");
     LogEvent(EVENTCATEGORIES::System, 1, "FS failure", "Failed to open config file.");
@@ -189,7 +191,7 @@ bool saveSettings() {
   Serial.println();
   #endif
 
-  fs::File configFile = SPIFFS.open("/config.json", "w");
+  File configFile = LittleFS.open("/config.json", "w");
   if (!configFile) {
     Serial.println("Failed to open config file for writing");
     LogEvent(System, 4, "FS failure", "Failed to open config file for writing.");
@@ -337,12 +339,12 @@ void handleLogin(){
     LogEvent(EVENTCATEGORIES::Login, 2, "Failure", "User name: " + server.arg("username") + " - Password: " + server.arg("password"));
   }
 
-  fs::File f = SPIFFS.open("/pageheader.html", "r");
+  File f = LittleFS.open("/pageheader.html", "r");
   String headerString;
   if (f.available()) headerString = f.readString();
   f.close();
 
-  f = SPIFFS.open("/login.html", "r");
+  f = LittleFS.open("/login.html", "r");
 
   String s, htmlString;
 
@@ -367,12 +369,12 @@ void handleRoot() {
     return;
   }
 
-  fs::File f = SPIFFS.open("/pageheader.html", "r");
+  File f = LittleFS.open("/pageheader.html", "r");
   String headerString;
   if (f.available()) headerString = f.readString();
   f.close();
 
-  f = SPIFFS.open("/index.html", "r");
+  f = LittleFS.open("/index.html", "r");
 
   String FirmwareVersionString = String(FIRMWARE_VERSION) + " @ " + String(__TIME__) + " - " + String(__DATE__);
 
@@ -404,7 +406,7 @@ void handleStatus() {
      return;
   }
 
-  fs::File f = SPIFFS.open("/pageheader.html", "r");
+  File f = LittleFS.open("/pageheader.html", "r");
   String headerString;
   if (f.available()) headerString = f.readString();
   f.close();
@@ -414,7 +416,7 @@ void handleStatus() {
 
   String s;
 
-  f = SPIFFS.open("/status.html", "r");
+  f = LittleFS.open("/status.html", "r");
 
   String htmlString, ds18b20list;
 
@@ -527,12 +529,12 @@ void handleGeneralSettings() {
 
   }
 
-  fs::File f = SPIFFS.open("/pageheader.html", "r");
+  File f = LittleFS.open("/pageheader.html", "r");
   String headerString;
   if (f.available()) headerString = f.readString();
   f.close();
 
-  f = SPIFFS.open("/generalsettings.html", "r");
+  f = LittleFS.open("/generalsettings.html", "r");
 
   String s, htmlString, timezoneslist;
 
@@ -599,12 +601,12 @@ void handleNetworkSettings() {
     }
   }
 
-  fs::File f = SPIFFS.open("/pageheader.html", "r");
+  File f = LittleFS.open("/pageheader.html", "r");
   String headerString;
   if (f.available()) headerString = f.readString();
   f.close();
 
-  f = SPIFFS.open("/networksettings.html", "r");
+  f = LittleFS.open("/networksettings.html", "r");
   String s, htmlString, wifiList;
 
   byte numberOfNetworks = WiFi.scanNetworks();
@@ -651,12 +653,12 @@ void handleTools() {
     }
   }
 
-  fs::File f = SPIFFS.open("/pageheader.html", "r");
+  File f = LittleFS.open("/pageheader.html", "r");
   String headerString;
   if (f.available()) headerString = f.readString();
   f.close();
 
-  f = SPIFFS.open("/tools.html", "r");
+  f = LittleFS.open("/tools.html", "r");
 
   String s, htmlString;
 
@@ -723,6 +725,41 @@ void SendHeartbeat(){
   needsHeartbeat = false;
 }
 
+void ScanI2C(){
+  byte error, address;
+  int nDevices;
+
+  Serial.println("\nScanning for I2C devices...");
+
+  nDevices = 0;
+  for(address = 1; address < 127; address++ )
+  {
+    Wire.beginTransmission(address);
+    error = Wire.endTransmission();
+
+    if (error == 0)
+    {
+      Serial.print("Device ");
+      Serial.print(nDevices);
+      Serial.print(":\t0x");
+      if (address<16)
+        Serial.print("0");
+      Serial.println(address,HEX);
+
+      nDevices++;
+    }
+    else if (error==4)
+    {
+      Serial.print("Unknow error at address 0x");
+      if (address<16)
+        Serial.print("0");
+      Serial.println(address,HEX);
+    }
+  }
+  if (nDevices == 0)
+    Serial.println("No I2C devices found.\n");
+
+}
 
 void mqtt_callback(const MQTT::Publish& pub) {
 
@@ -784,7 +821,7 @@ void setup() {
   Serial.println();
 
   //  File system
-  if (!SPIFFS.begin()){
+  if (!LittleFS.begin()){
     Serial.println("Error: Failed to initialize the filesystem!");
   }
 
@@ -807,6 +844,26 @@ void setup() {
     pinMode(GPIO_ID_PIN(digitalOutputs[i].gpio),OUTPUT);
     digitalWrite(GPIO_ID_PIN(digitalOutputs[i].gpio), HIGH);
   }
+
+    //  I2C
+  Wire.begin(SDA_GPIO, SCL_GPIO);
+  ScanI2C();
+
+  i2c_io.write8(0xff);
+
+  #ifdef __debugSettings
+
+  for (size_t i = 0; i < 8; i++) {
+    i2c_io.write(i, 0);
+    delay(100);
+  }
+
+  for (size_t i = 0; i < 8; i++) {
+    i2c_io.write(i, 1);
+    delay(100);
+  }
+
+  #endif
 
   //  OTA
   ArduinoOTA.onStart([]() {
@@ -1015,7 +1072,7 @@ void loop(){
         }
 
         if (toggleRelay){
-          digitalWrite(digitalOutputs[0].gpio, !digitalRead(digitalOutputs[0].gpio));
+          i2c_io.toggleAll();
           toggleRelay = false;
         }
 

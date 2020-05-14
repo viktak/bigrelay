@@ -16,8 +16,10 @@
 #include <ArduinoOTA.h>
 #include <ESP8266WebServer.h>
 
-#define FS_NO_GLOBALS
-#include <FS.h>
+#include <LittleFS.h>
+
+#include <pcf8574_esp.h>
+#include <Wire.h>
 
 #include <PubSubClient.h>
 #include <EEPROM.h>
