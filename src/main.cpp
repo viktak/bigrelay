@@ -926,6 +926,8 @@ void setup() {
 
   os_timer_setfn(&relayTimer, relayTimerCallback, NULL);
   os_timer_arm(&relayTimer, 1000, true);
+  os_timer_disarm(&relayTimer);
+  i2c_io.toggleAll();
 
   
     // Set the initial connection state
