@@ -12,6 +12,7 @@ PubSubClient PSclient(wclient);
 //  Timers
 os_timer_t heartbeatTimer;
 os_timer_t relayTimer;
+os_timer_t accessPointTimer;
 
 //  I2C
 PCF857x i2c_io(RELAY_BOARD_ADDRESS, &Wire);
@@ -20,6 +21,8 @@ PCF857x i2c_io(RELAY_BOARD_ADDRESS, &Wire);
 config appConfig;
 bool isAccessPoint = false;
 bool isAccessPointCreated = false;
+TimeChangeRule *tcr;        // Pointer to the time change rule
+
 
 bool ntpInitialized = false;
 enum CONNECTION_STATE connectionState;
@@ -52,8 +55,12 @@ void LogEvent(int Category, int ID, String Title, String Data){
 
     Serial.println(msg);
 
-    PSclient.publish(MQTT::Publish(MQTT_CUSTOMER + String("/") + MQTT_PROJECT + String("/") + String(ESP.getChipId()) + "/log", msg ).set_qos(0));
+    PSclient.publish(MQTT::Publish(MQTT_CUSTOMER + String("/") + MQTT_PROJECT + String("/") + appConfig.mqttTopic + "/log", msg ).set_qos(0));
   }
+}
+
+void accessPointTimerCallback(void *pArg) {
+  ESP.reset();
 }
 
 void heartbeatTimerCallback(void *pArg) {
@@ -108,7 +115,7 @@ bool loadSettings(config& data) {
   }
   else
   {
-    strcpy(appConfig.ssid, "ssid");
+    strcpy(appConfig.ssid, defaultSSID);
   }
   
   if (doc["password"]){
@@ -213,7 +220,7 @@ void defaultSettings(){
   strcpy(appConfig.mqttServer, "test.mosquitto.org");
   #endif
 
-  appConfig.mqttPort = 1883;
+  appConfig.mqttPort = DEFAULT_MQTT_PORT;
   strcpy(appConfig.mqttTopic, DEFAULT_MQTT_TOPIC);
 
   appConfig.timeZone = 2;
@@ -343,6 +350,8 @@ void handleLogin(){
   if (f.available()) headerString = f.readString();
   f.close();
 
+  time_t localTime = myTZ.toLocal(now(), &tcr);
+
   f = LittleFS.open("/login.html", "r");
 
   String s, htmlString;
@@ -351,12 +360,14 @@ void handleLogin(){
     s = f.readStringUntil('\n');
 
     if (s.indexOf("%pageheader%")>-1) s.replace("%pageheader%", headerString);
+    if (s.indexOf("%year%")>-1) s.replace("%year%", (String)year(localTime));
     if (s.indexOf("%alert%")>-1) s.replace("%alert%", msg);
 
     htmlString+=s;
   }
   f.close();
   server.send(200, "text/html", htmlString);
+  LogEvent(PageHandler, 2, "Page served", "/");
 }
 
 void handleRoot() {
@@ -373,6 +384,8 @@ void handleRoot() {
   if (f.available()) headerString = f.readString();
   f.close();
 
+  time_t localTime = myTZ.toLocal(now(), &tcr);
+
   f = LittleFS.open("/index.html", "r");
 
   String FirmwareVersionString = String(FIRMWARE_VERSION) + " @ " + String(__TIME__) + " - " + String(__DATE__);
@@ -383,6 +396,7 @@ void handleRoot() {
     s = f.readStringUntil('\n');
 
     if (s.indexOf("%pageheader%")>-1) s.replace("%pageheader%", headerString);
+    if (s.indexOf("%year%")>-1) s.replace("%year%", (String)year(localTime));
     if (s.indexOf("%espid%")>-1) s.replace("%espid%", (String)ESP.getChipId());
     if (s.indexOf("%hardwareid%")>-1) s.replace("%hardwareid%", HARDWARE_ID);
     if (s.indexOf("%hardwareversion%")>-1) s.replace("%hardwareversion%", HARDWARE_VERSION);
@@ -424,6 +438,7 @@ void handleStatus() {
 
     //  System information
     if (s.indexOf("%pageheader%")>-1) s.replace("%pageheader%", headerString);
+    if (s.indexOf("%year%")>-1) s.replace("%year%", (String)year(localTime));
     if (s.indexOf("%chipid%")>-1) s.replace("%chipid%", (String)ESP.getChipId());
     if (s.indexOf("%uptime%")>-1) s.replace("%uptime%", TimeIntervalToString(millis()/1000));
     if (s.indexOf("%currenttime%")>-1) s.replace("%currenttime%", DateTimeToString(localTime));
@@ -532,6 +547,8 @@ void handleGeneralSettings() {
   String headerString;
   if (f.available()) headerString = f.readString();
   f.close();
+  
+  time_t localTime = myTZ.toLocal(now(), &tcr);
 
   f = LittleFS.open("/generalsettings.html", "r");
 
@@ -563,6 +580,7 @@ void handleGeneralSettings() {
     s = f.readStringUntil('\n');
 
     if (s.indexOf("%pageheader%")>-1) s.replace("%pageheader%", headerString);
+    if (s.indexOf("%year%")>-1) s.replace("%year%", (String)year(localTime));
     if (s.indexOf("%mqtt-servername%")>-1) s.replace("%mqtt-servername%", appConfig.mqttServer);
     if (s.indexOf("%mqtt-port%")>-1) s.replace("%mqtt-port%", String(appConfig.mqttPort));
     if (s.indexOf("%mqtt-topic%")>-1) s.replace("%mqtt-topic%", appConfig.mqttTopic);
@@ -605,6 +623,8 @@ void handleNetworkSettings() {
   if (f.available()) headerString = f.readString();
   f.close();
 
+  time_t localTime = myTZ.toLocal(now(), &tcr);
+
   f = LittleFS.open("/networksettings.html", "r");
   String s, htmlString, wifiList;
 
@@ -620,6 +640,7 @@ void handleNetworkSettings() {
     s = f.readStringUntil('\n');
 
     if (s.indexOf("%pageheader%")>-1) s.replace("%pageheader%", headerString);
+    if (s.indexOf("%year%")>-1) s.replace("%year%", (String)year(localTime));
     if (s.indexOf("%wifilist%")>-1) s.replace("%wifilist%", wifiList);
       htmlString+=s;
     }
@@ -657,6 +678,8 @@ void handleTools() {
   if (f.available()) headerString = f.readString();
   f.close();
 
+  time_t localTime = myTZ.toLocal(now(), &tcr);
+
   f = LittleFS.open("/tools.html", "r");
 
   String s, htmlString;
@@ -665,6 +688,7 @@ void handleTools() {
     s = f.readStringUntil('\n');
 
     if (s.indexOf("%pageheader%")>-1) s.replace("%pageheader%", headerString);
+    if (s.indexOf("%year%")>-1) s.replace("%year%", (String)year(localTime));
 
       htmlString+=s;
     }
@@ -690,6 +714,7 @@ void handleNotFound(){
 }
 
 void SendHeartbeat(){
+
   if (PSclient.connected()){
 
     TimeChangeRule *tcr;        // Pointer to the time change rule
@@ -922,12 +947,12 @@ void setup() {
   //  Timers
   os_timer_setfn(&heartbeatTimer, heartbeatTimerCallback, NULL);
   os_timer_arm(&heartbeatTimer, appConfig.heartbeatInterval * 1000, true);
-
-  os_timer_setfn(&relayTimer, relayTimerCallback, NULL);
+    os_timer_setfn(&relayTimer, relayTimerCallback, NULL);
   os_timer_arm(&relayTimer, 1000, true);
   os_timer_disarm(&relayTimer);
   i2c_io.toggleAll();
-
+  //  Randomizer
+  srand(now());
   
     // Set the initial connection state
   connectionState = STATE_CHECK_WIFI_CONNECTION;
@@ -961,6 +986,14 @@ void loop(){
 
       Serial.print("Access point address:\t");
       Serial.println(myIP);
+
+      Serial.println();
+      Serial.println("Note: The device will reset in 5 minutes.");
+
+
+      os_timer_setfn(&accessPointTimer, accessPointTimerCallback, NULL);
+      os_timer_arm(&accessPointTimer, ACCESS_POINT_TIMEOUT, true);
+      os_timer_disarm(&heartbeatTimer);
     }
     server.handleClient();
   }
@@ -1076,7 +1109,6 @@ void loop(){
           i2c_io.toggleAll();
           toggleRelay = false;
         }
-
 
         // Set next connection state
         connectionState = STATE_CHECK_WIFI_CONNECTION;
