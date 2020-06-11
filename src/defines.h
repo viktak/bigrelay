@@ -1,3 +1,6 @@
+#ifndef DEFINES_H
+#define DEFINES_H
+
 #define MQTT_CUSTOMER "viktak"
 #define MQTT_PROJECT  "spiti"
 
@@ -16,3 +19,5 @@
 #define RELAY_BOARD_ADDRESS 0x26
 #define SDA_GPIO 13
 #define SCL_GPIO 14
+
+#endif
