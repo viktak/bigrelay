@@ -163,6 +163,7 @@ bool loadSettings(config& data) {
   }
   else
   {
+    sprintf(defaultSSID, "%s-%u", DEFAULT_MQTT_TOPIC, ESP.getChipId());
     strcpy(appConfig.mqttTopic, defaultSSID);
   }
   
@@ -237,6 +238,8 @@ void defaultSettings(){
   #endif
 
   appConfig.mqttPort = DEFAULT_MQTT_PORT;
+
+  sprintf(defaultSSID, "%s-%u", DEFAULT_MQTT_TOPIC, ESP.getChipId());
   strcpy(appConfig.mqttTopic, defaultSSID);
 
   appConfig.timeZone = 2;
@@ -850,6 +853,7 @@ void mqtt_callback(char* topic, byte* payload, unsigned int length) {
 
 }
 
+
 void setup() {
   delay(1); //  Needed for PlatformIO serial monitor
   Serial.begin(115200);
@@ -878,7 +882,6 @@ void setup() {
     Serial.println("Config loaded.");
   }
 
-  sprintf(defaultSSID, "%s-%u", appConfig.mqttTopic, ESP.getChipId());
   WiFi.hostname(defaultSSID);
 
   //  GPIOs
@@ -1088,7 +1091,7 @@ void loop(){
         if (checkInternetConnection()) {
           // We have an Internet connection
 
-          if (! ntpInitialized) {
+          if (!ntpInitialized) {
             // We are connected to the Internet for the first time so set NTP provider
             initNTP();
 
