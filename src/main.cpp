@@ -1,4 +1,5 @@
 #define __debugSettings
+
 #include "includes.h"
 
 //  Web server
@@ -8,17 +9,13 @@ ESP8266WebServer server(80);
 WiFiClient wclient;
 PubSubClient PSclient(wclient);
 
-//  Timers
+//  Timers and their flags
 os_timer_t heartbeatTimer;
-os_timer_t relayTimer;
+os_timer_t BoilerTimer;
 os_timer_t accessPointTimer;
 
-//  Flags
-bool needsHeartbeat = false;
-bool toggleRelay = false;
-
 //  I2C
-PCF857x i2c_io(RELAY_BOARD_ADDRESS, &Wire);
+PCF857x i2c_relays(I2C_LED_PANEL0_ADDRESS, &Wire);
 
 //  Other global variables
 config appConfig;
@@ -26,20 +23,14 @@ bool isAccessPoint = false;
 bool isAccessPointCreated = false;
 TimeChangeRule *tcr;        // Pointer to the time change rule
 
-
-bool ntpInitialized = false;
 enum CONNECTION_STATE connectionState;
 
+//  Flags
+bool needsHeartbeat = false;
+bool ntpInitialized = false;
+bool boilerGotSwitchedOff = false;
+
 WiFiUDP Udp;
-
-digitalOutput digitalOutputs[0] = {
-  // { 2, "Bazi nagy relay"}
-};
-
-// Daylight savings time rules for Greece
-TimeChangeRule myDST = {"MDT", Fourth, Sun, Mar, 2, DST_TIMEZONE_OFFSET * 60};
-TimeChangeRule mySTD = {"MST", Fourth,  Sun, Oct, 2,  ST_TIMEZONE_OFFSET * 60};
-Timezone myTZ(myDST, mySTD);
 
 void LogEvent(int Category, int ID, String Title, String Data){
   if (PSclient.connected()){
@@ -83,8 +74,10 @@ void heartbeatTimerCallback(void *pArg) {
   needsHeartbeat = true;
 }
 
-void relayTimerCallback(void *pArg) {
-  toggleRelay = true;
+void BoilerTimerCallback(void *pArg) {
+    i2c_relays.write(WATER_RELAY, 1);
+    boilerGotSwitchedOff = true;
+    os_timer_disarm(&BoilerTimer);
 }
 
 bool loadSettings(config& data) {
@@ -157,14 +150,13 @@ bool loadSettings(config& data) {
   {
     appConfig.mqttPort = DEFAULT_MQTT_PORT;
   }
-  
-  if (doc["mqttTopic"]){
+
+    if (doc["mqttTopic"]){
     strcpy(appConfig.mqttTopic, doc["mqttTopic"]);
   }
   else
   {
-    sprintf(defaultSSID, "%s-%u", DEFAULT_MQTT_TOPIC, ESP.getChipId());
-    strcpy(appConfig.mqttTopic, defaultSSID);
+    sprintf(appConfig.mqttTopic, "%s-%u", DEFAULT_MQTT_TOPIC, ESP.getChipId());
   }
   
   if (doc["friendlyName"]){
@@ -190,7 +182,19 @@ bool loadSettings(config& data) {
   {
     appConfig.heartbeatInterval = DEFAULT_HEARTBEAT_INTERVAL;
   }
-  
+
+  if (doc["boilerDelay"]){
+    appConfig.boilerDelay = doc["boilerDelay"];
+  }
+  else
+  {
+    appConfig.boilerDelay = DEFAULT_BOILER_DELAY;
+  }
+
+  String ma = WiFi.macAddress();
+  ma.replace(":","");
+  sprintf(defaultSSID, "%s-%s", appConfig.mqttTopic, ma.substring(6, 12).c_str());
+
   return true;
 }
 
@@ -209,6 +213,9 @@ bool saveSettings() {
   doc["mqttTopic"] = appConfig.mqttTopic;
 
   doc["friendlyName"] = appConfig.friendlyName;
+
+  doc["boilerDelay"] = appConfig.boilerDelay;
+
   #ifdef __debugSettings
   serializeJsonPretty(doc,Serial);
   Serial.println();
@@ -247,6 +254,7 @@ void defaultSettings(){
   strcpy(appConfig.friendlyName, NODE_DEFAULT_FRIENDLY_NAME);
   appConfig.heartbeatInterval = DEFAULT_HEARTBEAT_INTERVAL;
 
+  appConfig.boilerDelay = DEFAULT_BOILER_DELAY;
 
   if (!saveSettings()) {
     Serial.println("Failed to save config");
@@ -369,7 +377,7 @@ void handleLogin(){
   if (f.available()) headerString = f.readString();
   f.close();
 
-  time_t localTime = myTZ.toLocal(now(), &tcr);
+  time_t localTime = timezones[appConfig.timeZone]->toLocal(now(), &tcr);
 
   f = LittleFS.open("/login.html", "r");
 
@@ -403,11 +411,11 @@ void handleRoot() {
   if (f.available()) headerString = f.readString();
   f.close();
 
-  time_t localTime = myTZ.toLocal(now(), &tcr);
+  time_t localTime = timezones[appConfig.timeZone]->toLocal(now(), &tcr);
 
   f = LittleFS.open("/index.html", "r");
 
-  String FirmwareVersionString = String(FIRMWARE_VERSION) + " @ " + String(__TIME__) + " - " + String(__DATE__);
+  String FirmwareVersionString = String(FIRMWARE_VERSION);
 
   String s, htmlString;
 
@@ -443,12 +451,13 @@ void handleStatus() {
   if (f.available()) headerString = f.readString();
   f.close();
 
-  time_t localTime = myTZ.toLocal(now(), &tcr);
+  time_t localTime = timezones[appConfig.timeZone]->toLocal(now(), &tcr);
 
   String s;
 
   f = LittleFS.open("/status.html", "r");
 
+  String FirmwareVersionString = String(FIRMWARE_VERSION);
   String htmlString, ds18b20list;
 
   while (f.available()){
@@ -458,6 +467,10 @@ void handleStatus() {
     if (s.indexOf("%pageheader%")>-1) s.replace("%pageheader%", headerString);
     if (s.indexOf("%year%")>-1) s.replace("%year%", (String)year(localTime));
     if (s.indexOf("%chipid%")>-1) s.replace("%chipid%", (String)ESP.getChipId());
+    if (s.indexOf("%hardwareid%")>-1) s.replace("%hardwareid%", HARDWARE_ID);
+    if (s.indexOf("%hardwareversion%")>-1) s.replace("%hardwareversion%", HARDWARE_VERSION);
+    if (s.indexOf("%firmwareid%")>-1) s.replace("%firmwareid%", SOFTWARE_ID);
+    if (s.indexOf("%firmwareversion%")>-1) s.replace("%firmwareversion%", FirmwareVersionString);
     if (s.indexOf("%uptime%")>-1) s.replace("%uptime%", TimeIntervalToString(millis()/1000));
     if (s.indexOf("%currenttime%")>-1) s.replace("%currenttime%", DateTimeToString(localTime));
     if (s.indexOf("%lastresetreason%")>-1) s.replace("%lastresetreason%", ESP.getResetReason());
@@ -496,6 +509,78 @@ void handleStatus() {
     f.close();
   server.send(200, "text/html", htmlString);
   LogEvent(EVENTCATEGORIES::PageHandler, 2, "Page served", "status.html");
+}
+
+void handleBoilerTimer() {
+  LogEvent(EVENTCATEGORIES::PageHandler, 1, "Page requested", "boilertimer.html");
+
+  if (!is_authenticated()){
+     String header = "HTTP/1.1 301 OK\r\nLocation: /login.html\r\nCache-Control: no-cache\r\n\r\n";
+     server.sendContent(header);
+     return;
+   }
+
+  if (server.method() == HTTP_POST){  //  POST
+    if (server.hasArg("timerValue")){
+      appConfig.boilerDelay = server.arg("timerValue").toInt();
+      LogEvent(EVENTCATEGORIES::BoilerDelay, 1, "New delay", server.arg("timerValue").c_str());
+    }
+    saveSettings();
+
+    if (PSclient.connected()){
+
+      const size_t capacity = JSON_OBJECT_SIZE(3) + JSON_OBJECT_SIZE(6) + 180;
+      StaticJsonDocument<capacity> doc;
+
+      doc["boilerDelay"] = appConfig.boilerDelay;
+
+      #ifdef __debugSettings
+      serializeJsonPretty(doc,Serial);
+      Serial.println();
+      #endif
+
+      String myJsonString;
+
+      serializeJson(doc, myJsonString);
+
+      PSclient.publish((MQTT_CUSTOMER + String("/") + MQTT_PROJECT + "/" + ESP.getChipId() + "/settings/").c_str(), myJsonString.c_str(), false );
+    }
+  }
+
+  File f = LittleFS.open("/pageheader.html", "r");
+  String headerString;
+  if (f.available()) headerString = f.readString();
+  f.close();
+
+  time_t localTime = timezones[appConfig.timeZone]->toLocal(now(), &tcr);
+
+  f = LittleFS.open("/boilertimer.html", "r");
+
+  String s, htmlString, delaylist;
+
+  delaylist = "";
+  for (size_t i = 10; i < 61; i+=10) {
+    delaylist+="<option";
+    if (appConfig.boilerDelay==i) delaylist+=" selected";
+    delaylist+=" value=\"";
+    delaylist+=(String)i;
+    delaylist+="\">";
+    delaylist+=(String)i;
+    delaylist+=" minutes</option>";
+    delaylist+="\n";
+  }
+
+  while (f.available()){
+    s = f.readStringUntil('\n');
+
+    if (s.indexOf("%pageheader%")>-1) s.replace("%pageheader%", headerString);
+    if (s.indexOf("%year%")>-1) s.replace("%year%", (String)year(localTime));
+    if (s.indexOf("%delaylist%")>-1) s.replace("%delaylist%", delaylist);
+    htmlString+=s;
+  }
+  f.close();
+  server.send(200, "text/html", htmlString);
+  LogEvent(EVENTCATEGORIES::PageHandler, 2, "Page served", "boilertimer.html");
 }
 
 void handleGeneralSettings() {
@@ -565,8 +650,8 @@ void handleGeneralSettings() {
   String headerString;
   if (f.available()) headerString = f.readString();
   f.close();
-  
-  time_t localTime = myTZ.toLocal(now(), &tcr);
+
+  time_t localTime = timezones[appConfig.timeZone]->toLocal(now(), &tcr);
 
   f = LittleFS.open("/generalsettings.html", "r");
 
@@ -574,7 +659,7 @@ void handleGeneralSettings() {
 
   char ss[2];
 
-  for (signed char i = -12; i < 15; i++) {
+  for (signed char i = 0; i < sizeof(tzDescriptions)/sizeof(tzDescriptions[0]); i++) {
     itoa(i, ss, DEC);
     timezoneslist+="<option ";
     if (appConfig.timeZone == i){
@@ -582,14 +667,10 @@ void handleGeneralSettings() {
     }
     timezoneslist+= "value=\"";
     timezoneslist+=ss;
-    timezoneslist+="\">UTC ";
-    if (i>0){
-      timezoneslist+="+";
-    }
-    if (i!=0){
-      timezoneslist+=ss;
-      timezoneslist+=":00";
-    }
+    timezoneslist+="\">";
+
+    timezoneslist+= tzDescriptions[i];
+
     timezoneslist+="</option>";
     timezoneslist+="\n";
   }
@@ -644,7 +725,7 @@ void handleNetworkSettings() {
   if (f.available()) headerString = f.readString();
   f.close();
 
-  time_t localTime = myTZ.toLocal(now(), &tcr);
+  time_t localTime = timezones[appConfig.timeZone]->toLocal(now(), &tcr);
 
   f = LittleFS.open("/networksettings.html", "r");
   String s, htmlString, wifiList;
@@ -699,7 +780,7 @@ void handleTools() {
   if (f.available()) headerString = f.readString();
   f.close();
 
-  time_t localTime = myTZ.toLocal(now(), &tcr);
+  time_t localTime = timezones[appConfig.timeZone]->toLocal(now(), &tcr);
 
   f = LittleFS.open("/tools.html", "r");
 
@@ -719,6 +800,14 @@ void handleTools() {
   LogEvent(EVENTCATEGORIES::PageHandler, 2, "Page served", "tools.html");
 }
 
+/*
+    for (size_t i = 0; i < server.args(); i++) {
+      Serial.print(server.argName(i));
+      Serial.print(": ");
+      Serial.println(server.arg(i));
+    }
+*/
+
 void handleNotFound(){
   String message = "File Not Found\n\n";
   message += "URI: ";
@@ -736,9 +825,9 @@ void handleNotFound(){
 
 void SendHeartbeat(){
 
-  if (PSclient.connected()){
+    if (PSclient.connected()){
 
-    time_t localTime = myTZ.toLocal(now(), &tcr);
+  time_t localTime = timezones[appConfig.timeZone]->toLocal(now(), &tcr);
 
     const size_t capacity = JSON_OBJECT_SIZE(3) + JSON_OBJECT_SIZE(6) + 180;
     StaticJsonDocument<capacity> doc;
@@ -763,45 +852,42 @@ void SendHeartbeat(){
 
     serializeJson(doc, myJsonString);
 
-    PSclient.publish((MQTT_CUSTOMER + String("/") + MQTT_PROJECT + "/" + appConfig.mqttTopic + "/HEARTBEAT").c_str(), myJsonString.c_str(), 0);
+    PSclient.publish((MQTT_CUSTOMER + String("/") + MQTT_PROJECT + "/" + appConfig.mqttTopic + "/HEARTBEAT").c_str(), myJsonString.c_str(), false);
   }
 
   needsHeartbeat = false;
 }
 
 void ScanI2C(){
-  byte error, address;
-  int nDevices;
+    byte error, address;
+    int nDevices;
 
-  Serial.println("\nScanning for I2C devices...");
+    Serial.println("\nScanning for I2C devices...");
 
-  nDevices = 0;
-  for(address = 1; address < 127; address++ )
-  {
-    Wire.beginTransmission(address);
-    error = Wire.endTransmission();
+    nDevices = 0;
+    for(address = 1; address < 127; address++ ){
+        Wire.beginTransmission(address);
+        error = Wire.endTransmission();
 
-    if (error == 0)
-    {
-      Serial.print("Device ");
-      Serial.print(nDevices);
-      Serial.print(":\t0x");
-      if (address<16)
-        Serial.print("0");
-      Serial.println(address,HEX);
+        if (error == 0){
+            Serial.print("Device ");
+            Serial.print(nDevices);
+            Serial.print(":\t0x");
+            if (address<16)
+                Serial.print("0");
+            Serial.println(address,HEX);
 
-      nDevices++;
+            nDevices++;
+        }
+        else if (error==4){
+            Serial.print("Unknow error at address 0x");
+            if (address<16)
+                Serial.print("0");
+            Serial.println(address,HEX);
+        }
     }
-    else if (error==4)
-    {
-      Serial.print("Unknow error at address 0x");
-      if (address<16)
-        Serial.print("0");
-      Serial.println(address,HEX);
-    }
-  }
-  if (nDevices == 0)
-    Serial.println("No I2C devices found.\n");
+    if (nDevices == 0)
+        Serial.println("No I2C devices found.\n");
 
 }
 
@@ -826,7 +912,6 @@ void mqtt_callback(char* topic, byte* payload, unsigned int length) {
       digitalWrite(CONNECTION_STATUS_LED_GPIO, !digitalRead(CONNECTION_STATUS_LED_GPIO));
       delay(50);
     }
-    return;
   }
   else{
     //  It IS a JSON string
@@ -836,6 +921,61 @@ void mqtt_callback(char* topic, byte* payload, unsigned int length) {
     Serial.println();
     #endif
 
+
+    String sCommand;
+    uint8_t iChannel;
+    
+    //  Relay0 - Water heater
+    if (doc.containsKey("POWER0")){
+      const char* myKey = doc["POWER0"];
+      sCommand = myKey;
+      sCommand.toUpperCase();
+      iChannel = 0;
+    }
+
+    //  Relay1 -
+    if (doc.containsKey("POWER1")){
+      const char* myKey = doc["POWER1"];
+      sCommand = myKey;
+      sCommand.toUpperCase();
+      iChannel = 1;
+    }
+
+    //  Relay2 - 
+    if (doc.containsKey("POWER2")){
+      const char* myKey = doc["POWER2"];
+      sCommand = myKey;
+      sCommand.toUpperCase();
+      iChannel = 2;
+    }
+
+    //  Relay3 - 
+    if (doc.containsKey("POWER3")){
+      const char* myKey = doc["POWER3"];
+      sCommand = myKey;
+      sCommand.toUpperCase();
+      iChannel = 3;
+    }
+
+
+
+    if ( sCommand == "ON" ){
+      if ( iChannel == 0)
+        os_timer_arm(&BoilerTimer, appConfig.boilerDelay * 60 * 1000, true);
+      if (PSclient.connected())
+        LogEvent(EVENTCATEGORIES::Boiler, 1, "Boiler", String(appConfig.boilerDelay));
+      i2c_relays.write(iChannel, 0);
+      if (PSclient.connected()){
+        PSclient.publish((MQTT_CUSTOMER + String("/") + MQTT_PROJECT + String("/") + appConfig.mqttTopic + "/RESULT/POWER" + (String)iChannel).c_str(), "on", false );
+        PSclient.publish((MQTT_CUSTOMER + String("/") + MQTT_PROJECT + String("/") + appConfig.mqttTopic + "/RESULT/POWER" + (String)iChannel + String("/DURATION")).c_str(), ((String)appConfig.boilerDelay).c_str(), false );
+      }
+    }
+    else if ( sCommand == "OFF" ){
+      i2c_relays.write(iChannel, 1);
+      if (PSclient.connected()){
+        PSclient.publish((MQTT_CUSTOMER + String("/") + MQTT_PROJECT + String("/") + appConfig.mqttTopic + "/RESULT/POWER" + (String)iChannel).c_str(), "off", false );
+      }
+    }
 
     //  reset
     if (doc.containsKey("reset")){
@@ -853,135 +993,114 @@ void mqtt_callback(char* topic, byte* payload, unsigned int length) {
 
 }
 
-
 void setup() {
-  delay(1); //  Needed for PlatformIO serial monitor
-  Serial.begin(115200);
-  Serial.setDebugOutput(false);
-  Serial.print("\n\n\n\rBooting node:     ");
-  Serial.print(ESP.getChipId());
-  Serial.println("...");
+    delay(1); //  Needed for PlatformIO serial monitor
+    Serial.begin(DEBUG_SPEED);
+    Serial.setDebugOutput(false);
+    Serial.print("\n\n\n\rBooting node:     ");
+    Serial.print(ESP.getChipId());
+    Serial.println("...");
 
-  String FirmwareVersionString = String(FIRMWARE_VERSION) + " @ " + String(__TIME__) + " - " + String(__DATE__);
+    Serial.println("Hardware ID:      " + (String)HARDWARE_ID);
+    Serial.println("Hardware version: " + (String)HARDWARE_VERSION);
+    Serial.println("Software ID:      " + (String)SOFTWARE_ID);
+    Serial.println("Software version: " + (String)FIRMWARE_VERSION);
+    Serial.println();
 
-  Serial.println("Hardware ID:      " + (String)HARDWARE_ID);
-  Serial.println("Hardware version: " + (String)HARDWARE_VERSION);
-  Serial.println("Software ID:      " + (String)SOFTWARE_ID);
-  Serial.println("Software version: " + FirmwareVersionString);
-  Serial.println();
+    //  File system
+    if (!LittleFS.begin()){
+        Serial.println("Error: Failed to initialize the filesystem!");
+    }
 
-  //  File system
-  if (!LittleFS.begin()){
-    Serial.println("Error: Failed to initialize the filesystem!");
-  }
+    if (!loadSettings(appConfig)) {
+        Serial.println("Failed to load config, creating default settings...");
+        defaultSettings();
+    } else {
+        Serial.println("Config loaded.");
+    }
 
-  if (!loadSettings(appConfig)) {
-    Serial.println("Failed to load config, creating default settings...");
-    defaultSettings();
-  } else {
-    Serial.println("Config loaded.");
-  }
+    WiFi.hostname(defaultSSID);
+    
+    //  GPIOs
 
-  WiFi.hostname(defaultSSID);
-
-  //  GPIOs
-  //  outputs
-  pinMode(CONNECTION_STATUS_LED_GPIO, OUTPUT);
-  digitalWrite(CONNECTION_STATUS_LED_GPIO, HIGH);
-
-  for (size_t i = 0; i < sizeof(digitalOutputs)/sizeof(digitalOutputs[0]); i++) {
-    pinMode(GPIO_ID_PIN(digitalOutputs[i].gpio),OUTPUT);
-    digitalWrite(GPIO_ID_PIN(digitalOutputs[i].gpio), HIGH);
-  }
+    //  outputs
+    pinMode(CONNECTION_STATUS_LED_GPIO, OUTPUT);
+    digitalWrite(CONNECTION_STATUS_LED_GPIO, HIGH);
 
     //  I2C
-  Wire.begin(SDA_GPIO, SCL_GPIO);
-  ScanI2C();
+    Wire.begin(SDA_GPIO, SCL_GPIO);
+    ScanI2C();
 
-  i2c_io.write8(0xff);
+    i2c_relays.write8(0xff);    //  Switch all relays off
 
-  #ifdef __debugSettings
 
-  for (size_t i = 0; i < 8; i++) {
-    i2c_io.write(i, 0);
-    delay(100);
-  }
+    //  OTA
+    ArduinoOTA.onStart([]() {
+        Serial.println("OTA started.");
+    });
 
-  for (size_t i = 0; i < 8; i++) {
-    i2c_io.write(i, 1);
-    delay(100);
-  }
+    ArduinoOTA.onEnd([]() {
+        Serial.println("\nOTA finished.");
+    });
 
-  #endif
+    ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+        Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
+        if (progress % OTA_BLINKING_RATE == 0){
+        if (digitalRead(CONNECTION_STATUS_LED_GPIO)==HIGH)
+            digitalWrite(CONNECTION_STATUS_LED_GPIO, LOW);
+            else
+            digitalWrite(CONNECTION_STATUS_LED_GPIO, HIGH);
+        }
+    });
 
-  //  OTA
-  ArduinoOTA.onStart([]() {
-    Serial.println("OTA started.");
-  });
+    ArduinoOTA.onError([](ota_error_t error) {
+        Serial.printf("Error[%u]: ", error);
+        if (error == OTA_AUTH_ERROR) Serial.println("Authentication failed.");
+        else if (error == OTA_BEGIN_ERROR) Serial.println("Begin failed.");
+        else if (error == OTA_CONNECT_ERROR) Serial.println("Connect failed.");
+        else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive failed.");
+        else if (error == OTA_END_ERROR) Serial.println("End failed.");
+    });
 
-  ArduinoOTA.onEnd([]() {
-    Serial.println("\nOTA finished.");
-  });
+    ArduinoOTA.begin();
 
-  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-    Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
-    if (progress % OTA_BLINKING_RATE == 0){
-      if (digitalRead(CONNECTION_STATUS_LED_GPIO)==HIGH)
-        digitalWrite(CONNECTION_STATUS_LED_GPIO, LOW);
-        else
-        digitalWrite(CONNECTION_STATUS_LED_GPIO, HIGH);
+    Serial.println();
+
+    server.on("/", handleStatus);
+    server.on("/status.html", handleStatus);
+    server.on("/generalsettings.html", handleGeneralSettings);
+    server.on("/networksettings.html", handleNetworkSettings);
+    server.on("/boilertimer.html", handleBoilerTimer);
+    server.on("/tools.html", handleTools);
+    server.on("/login.html", handleLogin);
+
+    server.onNotFound(handleNotFound);
+
+    //  Web server
+    if (MDNS.begin("esp8266")) {
+        Serial.println("MDNS responder started.");
     }
-  });
 
-  ArduinoOTA.onError([](ota_error_t error) {
-    Serial.printf("Error[%u]: ", error);
-    if (error == OTA_AUTH_ERROR) Serial.println("Authentication failed.");
-    else if (error == OTA_BEGIN_ERROR) Serial.println("Begin failed.");
-    else if (error == OTA_CONNECT_ERROR) Serial.println("Connect failed.");
-    else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive failed.");
-    else if (error == OTA_END_ERROR) Serial.println("End failed.");
-  });
+    //  Start HTTP (web) server
+    server.begin();
+    Serial.println("HTTP server started.");
 
-  ArduinoOTA.begin();
+    //  Authenticate HTTP requests
+    const char * headerkeys[] = {"User-Agent","Cookie"} ;
+    size_t headerkeyssize = sizeof(headerkeys)/sizeof(char*);
+    server.collectHeaders(headerkeys, headerkeyssize );
 
-  Serial.println();
+    //  Timers
+    os_timer_setfn(&heartbeatTimer, heartbeatTimerCallback, NULL);
+    os_timer_arm(&heartbeatTimer, appConfig.heartbeatInterval * 1000, true);
 
-  server.on("/", handleRoot);
-  server.on("/status.html", handleStatus);
-  server.on("/generalsettings.html", handleGeneralSettings);
-  server.on("/networksettings.html", handleNetworkSettings);
-  server.on("/tools.html", handleTools);
-  server.on("/login.html", handleLogin);
+    os_timer_setfn(&BoilerTimer, BoilerTimerCallback, NULL);
 
-  server.onNotFound(handleNotFound);
+    //  Randomizer
+    SetRandomSeed();
 
-  //  Web server
-  if (MDNS.begin("esp8266")) {
-    Serial.println("MDNS responder started.");
-  }
-
-  //  Start HTTP (web) server
-  server.begin();
-  Serial.println("HTTP server started.");
-
-  //  Authenticate HTTP requests
-  const char * headerkeys[] = {"User-Agent","Cookie"} ;
-  size_t headerkeyssize = sizeof(headerkeys)/sizeof(char*);
-  server.collectHeaders(headerkeys, headerkeyssize );
-
-  //  Timers
-  os_timer_setfn(&heartbeatTimer, heartbeatTimerCallback, NULL);
-  os_timer_arm(&heartbeatTimer, appConfig.heartbeatInterval * 1000, true);
-  os_timer_setfn(&relayTimer, relayTimerCallback, NULL);
-  os_timer_arm(&relayTimer, 1000, true);
-  os_timer_disarm(&relayTimer);
-  i2c_io.toggleAll();
-  
-  //  Randomizer
-  SetRandomSeed();
-  
-  // Set the initial connection state
-  connectionState = STATE_CHECK_WIFI_CONNECTION;
+    // Set the initial connection state
+    connectionState = STATE_CHECK_WIFI_CONNECTION;
 
 }
 
@@ -1096,7 +1215,6 @@ void loop(){
             initNTP();
 
             ntpInitialized = true;
-
             Serial.println("Connected to the Internet.");
           }
 
@@ -1131,15 +1249,18 @@ void loop(){
           needsHeartbeat = false;
         }
 
-        if (toggleRelay){
-          i2c_io.toggleAll();
-          toggleRelay = false;
+        if (boilerGotSwitchedOff){
+            if (PSclient.connected()){
+                PSclient.publish((MQTT_CUSTOMER + String("/") + MQTT_PROJECT + String("/") + appConfig.mqttTopic + "/RESULT/POWER0" ).c_str(), "off", false );
+                LogEvent(EVENTCATEGORIES::Boiler, 1, "Boiler", "off");
+                boilerGotSwitchedOff = false;
+            }
         }
 
         // Set next connection state
         connectionState = STATE_CHECK_WIFI_CONNECTION;
         break;
-    }
+      }
 
   }
 }

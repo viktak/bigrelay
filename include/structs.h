@@ -13,10 +13,11 @@ struct config{
 
   bool dst;
 
+  unsigned long boilerDelay;
+
 };
 
-
-struct digitalOutput{
-  char gpio;
-  const char* name;
+struct sunData_t{
+  time_t Sunrise;
+  time_t Sunset;
 };
