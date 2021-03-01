@@ -28,7 +28,7 @@ enum CONNECTION_STATE connectionState;
 //  Flags
 bool needsHeartbeat = false;
 bool ntpInitialized = false;
-bool boilerGotSwitchedOff = false;
+bool boilerGotSwitchedOff = true;
 
 WiFiUDP Udp;
 
@@ -75,7 +75,7 @@ void heartbeatTimerCallback(void *pArg) {
 }
 
 void BoilerTimerCallback(void *pArg) {
-    i2c_relays.write(WATER_RELAY, 1);
+    i2c_relays.write(BOILER_RELAY, 1);
     boilerGotSwitchedOff = true;
     os_timer_disarm(&BoilerTimer);
 }
@@ -921,61 +921,47 @@ void mqtt_callback(char* topic, byte* payload, unsigned int length) {
     Serial.println();
     #endif
 
-
+    String sKey;
+    char c[1];
     String sCommand;
-    uint8_t iChannel;
+
+    for (size_t i = 0; i < 8; i++){
+         sKey = "POWER";
+        itoa(i, c, DEC);
+        sKey+=c;
+
+        if (doc.containsKey(sKey)){
+            const char* myKey = doc[sKey];
+            sCommand = myKey;
+            sCommand.toUpperCase();
+
+            if (sCommand == "ON"){
+                i2c_relays.write(i, 0);     //  Switch on relay
+
+                switch (i){
+                case BOILER_RELAY:  //  if it is the boiler
+                    os_timer_arm(&BoilerTimer, appConfig.boilerDelay * 60 * 1000, true);        //  start timer for auto switch off
+                    if (PSclient.connected())
+                        PSclient.publish((MQTT_CUSTOMER + String("/") + MQTT_PROJECT + String("/") + appConfig.mqttTopic + "/RESULT/POWER" + (String)i + String("/DURATION")).c_str(), ((String)appConfig.boilerDelay).c_str(), false );
+                    LogEvent(EVENTCATEGORIES::Boiler, 1, "Boiler", String(appConfig.boilerDelay));
+                    break;
+                default:
+                    break;
+                }
+                if (PSclient.connected()){
+                    PSclient.publish((MQTT_CUSTOMER + String("/") + MQTT_PROJECT + String("/") + appConfig.mqttTopic + "/RESULT/POWER" + (String)i).c_str(), "on", false );
+                }
+            } else if (sCommand == "OFF"){
+                i2c_relays.write(i, 1);     //  Switch off relay
+                if (PSclient.connected()){
+                    PSclient.publish((MQTT_CUSTOMER + String("/") + MQTT_PROJECT + String("/") + appConfig.mqttTopic + "/RESULT/POWER" + (String)i).c_str(), "off", false );
+                }            
+            }
+           
+        }
+    }
+
     
-    //  Relay0 - Water heater
-    if (doc.containsKey("POWER0")){
-      const char* myKey = doc["POWER0"];
-      sCommand = myKey;
-      sCommand.toUpperCase();
-      iChannel = 0;
-    }
-
-    //  Relay1 -
-    if (doc.containsKey("POWER1")){
-      const char* myKey = doc["POWER1"];
-      sCommand = myKey;
-      sCommand.toUpperCase();
-      iChannel = 1;
-    }
-
-    //  Relay2 - 
-    if (doc.containsKey("POWER2")){
-      const char* myKey = doc["POWER2"];
-      sCommand = myKey;
-      sCommand.toUpperCase();
-      iChannel = 2;
-    }
-
-    //  Relay3 - 
-    if (doc.containsKey("POWER3")){
-      const char* myKey = doc["POWER3"];
-      sCommand = myKey;
-      sCommand.toUpperCase();
-      iChannel = 3;
-    }
-
-
-
-    if ( sCommand == "ON" ){
-      if ( iChannel == 0)
-        os_timer_arm(&BoilerTimer, appConfig.boilerDelay * 60 * 1000, true);
-      if (PSclient.connected())
-        LogEvent(EVENTCATEGORIES::Boiler, 1, "Boiler", String(appConfig.boilerDelay));
-      i2c_relays.write(iChannel, 0);
-      if (PSclient.connected()){
-        PSclient.publish((MQTT_CUSTOMER + String("/") + MQTT_PROJECT + String("/") + appConfig.mqttTopic + "/RESULT/POWER" + (String)iChannel).c_str(), "on", false );
-        PSclient.publish((MQTT_CUSTOMER + String("/") + MQTT_PROJECT + String("/") + appConfig.mqttTopic + "/RESULT/POWER" + (String)iChannel + String("/DURATION")).c_str(), ((String)appConfig.boilerDelay).c_str(), false );
-      }
-    }
-    else if ( sCommand == "OFF" ){
-      i2c_relays.write(iChannel, 1);
-      if (PSclient.connected()){
-        PSclient.publish((MQTT_CUSTOMER + String("/") + MQTT_PROJECT + String("/") + appConfig.mqttTopic + "/RESULT/POWER" + (String)iChannel).c_str(), "off", false );
-      }
-    }
 
     //  reset
     if (doc.containsKey("reset")){
