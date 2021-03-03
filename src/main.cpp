@@ -263,6 +263,8 @@ void defaultSettings(){
   }
 }
 
+
+
 String DateTimeToString(time_t time){
 
   String myTime = "";
@@ -334,6 +336,13 @@ String TimeIntervalToString(time_t time){
   myTime+= s;
   return myTime;
 }
+
+void ChangeSettings_JSON(DynamicJsonDocument doc){
+  if ( doc["CHANNEL0_DELAY"] ) appConfig.boilerDelay = doc["CHANNEL0_DELAY"];
+
+  saveSettings();
+}
+
 
 bool is_authenticated(){
   #ifdef __debugSettings
@@ -960,6 +969,13 @@ void mqtt_callback(char* topic, byte* payload, unsigned int length) {
            
         }
     }
+
+    if ( doc.containsKey("command")){
+        const char* command = doc["command"];
+        if ( !strcmp(command, "SetSettings") )
+            ChangeSettings_JSON(doc.getMember("params"));
+    }
+
 
     
 

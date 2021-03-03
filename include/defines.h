@@ -20,6 +20,7 @@
 #define SDA_GPIO 13
 #define SCL_GPIO 14
 
+//  Relays
 #define BOILER_RELAY 0
 
 #define I2C_LED_PANEL0_ADDRESS 0x27
