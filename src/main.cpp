@@ -626,8 +626,8 @@ void handleGeneralSettings() {
     }
 
     //  MQTT settings
-    if (server.hasArg("mqttbroker")){
-      if ((String)appConfig.mqttServer != server.arg("mqttbroker"))
+    if (server.hasArg("mqttbroker"))
+      if ((String)appConfig.mqttServer != server.arg("mqttbroker")){
         mqttDirty = true;
         sprintf(appConfig.mqttServer, "%s", server.arg("mqttbroker").c_str());
         LogEvent(EVENTCATEGORIES::MqttParamChange, 1, "New MQTT broker", appConfig.mqttServer);
@@ -640,8 +640,8 @@ void handleGeneralSettings() {
       LogEvent(EVENTCATEGORIES::MqttParamChange, 2, "New MQTT port", server.arg("mqttport").c_str());
     }
 
-    if (server.hasArg("mqtttopic")){
-      if ((String)appConfig.mqttTopic != server.arg("mqtttopic"))
+    if (server.hasArg("mqtttopic"))
+      if ((String)appConfig.mqttTopic != server.arg("mqtttopic")){
         mqttDirty = true;
         sprintf(appConfig.mqttTopic, "%s", server.arg("mqtttopic").c_str());
         LogEvent(EVENTCATEGORIES::MqttParamChange, 1, "New MQTT topic", appConfig.mqttTopic);
@@ -668,10 +668,10 @@ void handleGeneralSettings() {
 
   char ss[2];
 
-  for (signed char i = 0; i < sizeof(tzDescriptions)/sizeof(tzDescriptions[0]); i++) {
+  for (unsigned long i = 0; i < sizeof(tzDescriptions)/sizeof(tzDescriptions[0]); i++) {
     itoa(i, ss, DEC);
     timezoneslist+="<option ";
-    if (appConfig.timeZone == i){
+    if ((unsigned long)appConfig.timeZone == i){
       timezoneslist+= "selected ";
     }
     timezoneslist+= "value=\"";
