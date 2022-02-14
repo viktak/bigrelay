@@ -32,9 +32,9 @@ byte packetBuffer[NTP_PACKET_SIZE]; // Buffer to hold incoming and outgoing pack
 // Don't hardwire the IP address or we won't get the benefits of the time server pool.
 IPAddress timeServerIP;
 #ifdef __debugSettings
-const char *ntpServerName = "192.168.1.3";
+const char *ntpServerName = "192.168.1.2";
 #else
-const char *ntpServerName = "time.nist.gov";
+const char *ntpServerName = "pool.ntp.org";
 //const char *ntpServerName = "nl.pool.ntp.org";
 #endif
 

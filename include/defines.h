@@ -6,7 +6,7 @@
 
 #define HARDWARE_ID "NeoPixel & I2C"
 #define HARDWARE_VERSION "1.0"
-#define SOFTWARE_ID "I2C relay driver - water heater"
+#define FIRMWARE_ID "I2C relay driver - water heater"
 
 #define DEBUG_SPEED 921600
 
